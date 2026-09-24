@@ -34,7 +34,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add upstream https://github.com/decolua/9router.git
-          git fetch upstream master
+          git fetch upstream master:refs/remotes/upstream/master
 
           if git merge-base --is-ancestor upstream/master HEAD; then
             echo "Fork already contains upstream/master."
@@ -42,9 +42,34 @@ jobs:
             exit 0
           fi
 
-          git merge --no-commit -X theirs upstream/master
-          git checkout upstream/master -- Dockerfile .github/workflows/docker-publish.yml
+          if ! git merge --no-commit -X theirs upstream/master; then
+            conflicts="$(git diff --name-only --diff-filter=U || true)"
+            echo "Merge reported conflicts:"
+            printf '%s\n' "$conflicts"
+
+            unexpected="$(
+              printf '%s\n' "$conflicts" |
+                grep -v -E '^(Dockerfile|\.github/workflows/docker-publish\.yml)$' || true
+            )"
+
+            if [ -n "$unexpected" ]; then
+              echo "Unexpected conflicts require manual resolution:"
+              printf '%s\n' "$unexpected"
+              exit 1
+            fi
+          fi
+
+          git restore --source=upstream/master --staged --worktree Dockerfile .github/workflows/docker-publish.yml
+
+          remaining_conflicts="$(git diff --name-only --diff-filter=U || true)"
+          if [ -n "$remaining_conflicts" ]; then
+            echo "Remaining conflicts require manual resolution:"
+            printf '%s\n' "$remaining_conflicts"
+            exit 1
+          fi
+
           git commit --no-edit
+          git log --oneline -1
           git push origin HEAD:${GITHUB_REF_NAME}
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
