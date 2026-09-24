@@ -42,7 +42,9 @@ jobs:
             exit 0
           fi
 
-          git merge --no-edit upstream/master
+          git merge --no-commit -X theirs upstream/master
+          git checkout upstream/master -- Dockerfile .github/workflows/docker-publish.yml
+          git commit --no-edit
           git push origin HEAD:${GITHUB_REF_NAME}
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
