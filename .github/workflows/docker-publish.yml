@@ -13,6 +13,10 @@ env:
   GHCR_IMAGE: ghcr.io/storevani/9router
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+concurrency:
+  group: storevani-ghcr
+  cancel-in-progress: false
+
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
@@ -24,7 +28,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ github.ref_name }}
 
       - uses: docker/setup-buildx-action@v3
 
