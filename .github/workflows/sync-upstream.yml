@@ -23,8 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    # Provision GHCR_PUBLISH_TOKEN as an environment-only secret and configure
-    # ghcr-production to allow deployments solely from master.
+    # Gate publishing through ghcr-production (restrict deployments to master).
+    # Reuse the existing repository GHCR_TOKEN; no new PAT is required.
     environment:
       name: ghcr-production
 
@@ -44,12 +44,12 @@ jobs:
 
       - name: Check GHCR publish credentials before changing master
         env:
-          GHCR_PUBLISH_TOKEN: ${{ secrets.GHCR_PUBLISH_TOKEN }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "$GHCR_PUBLISH_TOKEN" ]; then
-            echo "::error::Missing protected environment secret GHCR_PUBLISH_TOKEN."
-            echo "Create a protected ghcr-production environment (master only) and move the PAT there." >> "$GITHUB_STEP_SUMMARY"
+          if [ -z "$GHCR_TOKEN" ]; then
+            echo "::error::Missing existing GHCR_TOKEN secret (repository or environment)."
+            echo "Reuse the existing repository secret GHCR_TOKEN; no new token is required." >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
@@ -61,7 +61,7 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ secrets.GHCR_USERNAME || github.repository_owner }}
-          password: ${{ secrets.GHCR_PUBLISH_TOKEN }}
+          password: ${{ secrets.GHCR_TOKEN }}
 
       - name: Inspect GHCR image revisions before changing master
         id: image
