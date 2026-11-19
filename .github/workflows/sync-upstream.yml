@@ -6,8 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 env:
   GHCR_IMAGE: ghcr.io/storevani/9router
@@ -19,87 +18,83 @@ concurrency:
 
 jobs:
   sync:
+    # Only the canonical default branch is allowed to update master or GHCR.
+    if: github.repository == 'storevani/9router' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # Provision GHCR_PUBLISH_TOKEN as an environment-only secret and configure
+    # ghcr-production to allow deployments solely from master.
+    environment:
+      name: ghcr-production
 
     steps:
-      - name: Checkout fork
+      - name: Checkout fork master
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: master
+          persist-credentials: true
 
-      - name: Sync and verify latest upstream release
+      - name: Prepare and verify upstream release (local only)
         id: release
         run: |
           set -euo pipefail
           bash .github/scripts/sync-upstream-release.sh
-          # Only publish code based on the current remote master.
-          # Fail closed on a concurrent update rather than merging unreviewed changes.
-          git push origin HEAD:master
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Verify GHCR token
+      - name: Check GHCR publish credentials before changing master
         env:
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GHCR_PUBLISH_TOKEN: ${{ secrets.GHCR_PUBLISH_TOKEN }}
         run: |
-          if [ -z "$GHCR_TOKEN" ]; then
-            echo "Missing repository secret GHCR_TOKEN."
+          set -euo pipefail
+          if [ -z "$GHCR_PUBLISH_TOKEN" ]; then
+            echo "::error::Missing protected environment secret GHCR_PUBLISH_TOKEN."
+            echo "Create a protected ghcr-production environment (master only) and move the PAT there." >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
-      - name: Log in to GHCR
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR before changing master
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ secrets.GHCR_USERNAME || github.repository_owner }}
-          password: ${{ secrets.GHCR_TOKEN }}
+          password: ${{ secrets.GHCR_PUBLISH_TOKEN }}
 
-      - name: Check published revision and release image
+      - name: Inspect GHCR image revisions before changing master
         id: image
         env:
           VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
-          revision="$(git rev-parse HEAD)"
-          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          export REVISION="$(git rev-parse HEAD)"
+          echo "revision=$REVISION" >> "$GITHUB_OUTPUT"
+          bash .github/scripts/ghcr-preflight.sh
 
-          inspect_revision() {
-            local image="$1"
-            local result error_file
-            error_file="$(mktemp)"
-            if result="$(docker buildx imagetools inspect "$image" --format '{{json .Image}}' 2>"$error_file")"; then
-              rm -f "$error_file"
-              jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' <<< "$result"
-            elif grep -Eqi 'manifest unknown|manifest.*not found|not found|404' "$error_file"; then
-              echo "Image $image does not exist yet." >&2
-              rm -f "$error_file"
-              printf '\n'
-            else
-              echo "::error::Failed to inspect $image" >&2
-              cat "$error_file" >&2
-              rm -f "$error_file"
-              return 1
-            fi
-          }
+      - name: Verify Docker build without publishing
+        if: steps.image.outputs.needed == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          outputs: type=cacheonly
+          cache-from: type=registry,ref=${{ env.GHCR_IMAGE }}:buildcache
+          build-args: |
+            APP_VERSION=${{ steps.release.outputs.version }}
+          provenance: false
+          sbom: false
 
-          published="$(inspect_revision "${GHCR_IMAGE}:latest")"
-          release_published="$(inspect_revision "${GHCR_IMAGE}:${VERSION}")"
-          if [ "$published" = "$revision" ] && [ "$release_published" = "$revision" ]; then
-            echo "needed=false" >> "$GITHUB_OUTPUT"
-            echo "Both latest and ${VERSION} already match $revision." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "needed=true" >> "$GITHUB_OUTPUT"
-            echo "Publishing latest and ${VERSION} for $revision." >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Extract Docker metadata
+      - name: Prepare release metadata before changing master
         if: steps.image.outputs.needed == 'true'
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.GHCR_IMAGE }}
+          flavor: |
+            latest=false
           tags: |
             type=raw,value=sha-${{ steps.image.outputs.revision }}
             type=raw,value=latest
@@ -108,7 +103,15 @@ jobs:
             org.opencontainers.image.revision=${{ steps.image.outputs.revision }}
             org.opencontainers.image.version=${{ steps.release.outputs.version }}
 
-      - name: Build and push image
+      - name: Push validated release commit to master
+        run: |
+          set -euo pipefail
+          # This is a fast-forward-only push: a concurrent source update rejects it.
+          git push origin HEAD:refs/heads/master
+          git fetch origin master
+          test "$(git rev-parse HEAD)" = "$(git rev-parse refs/remotes/origin/master)"
+
+      - name: Publish validated GHCR image
         if: steps.image.outputs.needed == 'true'
         uses: docker/build-push-action@v6
         with:
@@ -118,6 +121,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=registry,ref=${{ env.GHCR_IMAGE }}:buildcache
           cache-to: type=registry,ref=${{ env.GHCR_IMAGE }}:buildcache,mode=max
+          build-args: |
+            APP_VERSION=${{ steps.release.outputs.version }}
           platforms: linux/amd64
           provenance: false
           sbom: false
