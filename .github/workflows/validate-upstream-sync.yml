@@ -10,6 +10,15 @@ on:
       - ".github/workflows/docker-publish.yml"
       - ".github/scripts/**"
       - "Dockerfile"
+  push:
+    branches:
+      - master
+    paths:
+      - ".github/workflows/sync-upstream.yml"
+      - ".github/workflows/validate-upstream-sync.yml"
+      - ".github/workflows/docker-publish.yml"
+      - ".github/scripts/**"
+      - "Dockerfile"
   workflow_dispatch:
 
 permissions:
