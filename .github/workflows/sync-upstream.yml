@@ -64,7 +64,7 @@ jobs:
               return
             fi
 
-            if ! git merge --no-commit -X theirs "$source_ref"; then
+            if ! git merge --no-ff --no-commit -X theirs "$source_ref"; then
               conflicts="$(git diff --name-only --diff-filter=U || true)"
               echo "Merge conflicts with $source_ref:"
               printf '%s\n' "$conflicts"
@@ -79,9 +79,9 @@ jobs:
               fi
             fi
 
-            # Keep fork-managed automation; preserve existing upstream Dockerfile policy.
+            # Keep fork-managed automation and the existing fork Dockerfile.
             git restore --source=HEAD --staged --worktree .github/workflows
-            git restore --source="$source_ref" --staged --worktree Dockerfile
+            git restore --source=HEAD --staged --worktree Dockerfile
             remaining_conflicts="$(git diff --name-only --diff-filter=U || true)"
             if [ -n "$remaining_conflicts" ]; then
               echo "Remaining conflicts require manual resolution:"
