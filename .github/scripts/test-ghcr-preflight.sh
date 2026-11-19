@@ -27,6 +27,20 @@ case "${MOCK_MODE:-matching}" in
       exit 1
     fi
     printf '{"config":{"Labels":{"org.opencontainers.image.revision":"commit-good"}}}\n' ;;
+  buildx-missing-version)
+    if [[ "$4" == *:1.2.3 ]]; then
+      echo "ERROR: $4: not found" >&2
+      exit 1
+    fi
+    printf '{"config":{"Labels":{"org.opencontainers.image.revision":"commit-good"}}}\n' ;;
+  buildx-missing-latest)
+    if [[ "$4" == *:latest ]]; then
+      echo "ERROR: $4: not found" >&2
+      exit 1
+    fi
+    printf '{"config":{"Labels":{"org.opencontainers.image.revision":"commit-good"}}}\n' ;;
+  wrong-reference) echo 'ERROR: ghcr.io/other/project:1.2.3: not found' >&2; exit 1 ;;
+  mixed-denied) echo "ERROR: $4: not found" >&2; echo '403 Forbidden' >&2; exit 1 ;;
   unauthorized) echo '401 Unauthorized' >&2; exit 1 ;;
   forbidden) echo '403 Forbidden' >&2; exit 1 ;;
   ambiguous404) echo 'unexpected status 404 Not Found' >&2; exit 1 ;;
@@ -71,9 +85,13 @@ check_success matching false
 check_success mismatched true
 check_success missing-version true
 check_success missing-latest true
+check_success buildx-missing-version true
+check_success buildx-missing-latest true
 check_failure unauthorized
 check_failure forbidden
 check_failure ambiguous404
 check_failure connection
 check_failure badjson
+check_failure wrong-reference
+check_failure mixed-denied
 echo "GHCR preflight tests passed; no image was published."
