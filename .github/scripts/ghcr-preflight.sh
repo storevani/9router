@@ -17,9 +17,11 @@ inspect_revision() {
     fi
     printf '%s\n' "$result"
   else
-    # Be conservative: a bare 404 can hide inaccessible packages. Only recognize
-    # registry-specific missing-manifest errors, never auth/network failures.
-    if grep -Eqi 'manifest unknown|manifest[^[:cntrl:]]*not found|name unknown' "$error_file" &&
+    # Accept only explicit missing-manifest errors or Buildx's exact
+    # "ERROR: <requested image>: not found" response for the image inspected.
+    # A generic 404, a different image, or any auth/network failure still fails.
+    if (grep -Eqi 'manifest unknown|manifest[^[:cntrl:]]*not found|name unknown' "$error_file" ||
+        grep -Fqx "ERROR: ${reference}: not found" "$error_file") &&
       ! grep -Eqi '401|403|unauthorized|denied|forbidden|timeout|tls|connection' "$error_file"; then
       echo "No manifest at $reference; build required." >&2
       rm -f "$error_file"
