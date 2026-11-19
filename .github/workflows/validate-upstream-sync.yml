@@ -1,0 +1,43 @@
+name: Validate upstream release sync
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - ".github/workflows/sync-upstream.yml"
+      - ".github/workflows/validate-upstream-sync.yml"
+      - ".github/scripts/sync-upstream-release.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout proposed changes
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate GitHub Actions workflow syntax
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.7 -color
+
+      - name: Validate shell syntax
+        run: |
+          bash -n .github/scripts/sync-upstream-release.sh
+          bash -n <(sed -n '/^          inspect_revision() {/,/^          }/p' .github/workflows/sync-upstream.yml | sed 's/^          //')
+
+      - name: Dry-run release merge without pushing
+        id: sync
+        run: |
+          set -euo pipefail
+          before="$(git rev-parse HEAD)"
+          bash .github/scripts/sync-upstream-release.sh
+          version="$(node -p 'require("./package.json").version')"
+          test "$version" = "${{ steps.sync.outputs.version }}"
+          git diff --exit-code "$before" HEAD -- .github Dockerfile
+          echo "Validated release v${version} on local CI checkout only." >> "$GITHUB_STEP_SUMMARY"
