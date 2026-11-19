@@ -8,8 +8,8 @@ on:
       - ".github/workflows/sync-upstream.yml"
       - ".github/workflows/validate-upstream-sync.yml"
       - ".github/workflows/docker-publish.yml"
-      - ".github/scripts/sync-upstream-release.sh"
-      - ".github/scripts/test-sync-upstream-release.sh"
+      - ".github/scripts/**"
+      - "Dockerfile"
   workflow_dispatch:
 
 permissions:
@@ -18,38 +18,69 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
     steps:
       - name: Checkout proposed changes
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Validate GitHub Actions workflow syntax
+      - name: Validate GitHub Actions syntax with actionlint
         run: |
           docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.7 -color
 
-      - name: Validate shell syntax
+      - name: Validate Bash scripts
         run: |
-          bash -n .github/scripts/sync-upstream-release.sh
-          bash -n .github/scripts/test-sync-upstream-release.sh
-          bash -n <(sed -n '/^          inspect_revision() {/,/^          }/p' .github/workflows/sync-upstream.yml | sed 's/^          //')
+          set -euo pipefail
+          for script in .github/scripts/*.sh; do
+            bash -n "$script"
+          done
 
-      - name: Test rejection of unsafe upstream release histories
+      - name: Reject unsafe release history
         run: |
           bash .github/scripts/test-sync-upstream-release.sh
 
-      - name: Ensure secondary publisher does not overwrite latest
+      - name: Test GHCR preflight failure handling without registry access
         run: |
-          set -euo pipefail
-          workflow=".github/workflows/docker-publish.yml"
-          if ! grep -Eq '^[[:space:]]+latest=false[[:space:]]*$' "$workflow"; then
-            echo "::error::docker/metadata-action must disable auto latest"
-            exit 1
-          fi
-          if grep -Eq '^[[:space:]]+type=raw,value=latest[[:space:]]*$' "$workflow"; then
-            echo "::error::Secondary publisher must not tag latest"
-            exit 1
-          fi
+          bash .github/scripts/test-ghcr-preflight.sh
+
+      - name: Verify publish isolation and preflight ordering
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const sync = fs.readFileSync('.github/workflows/sync-upstream.yml', 'utf8');
+          const secondary = fs.readFileSync('.github/workflows/docker-publish.yml', 'utf8');
+          const index = name => sync.indexOf('      - name: ' + name);
+          const sequence = [
+            'Prepare and verify upstream release (local only)',
+            'Check GHCR publish credentials before changing master',
+            'Login to GHCR before changing master',
+            'Inspect GHCR image revisions before changing master',
+            'Verify Docker build without publishing',
+            'Prepare release metadata before changing master',
+            'Push validated release commit to master',
+            'Publish validated GHCR image'
+          ].map(index);
+          if (sequence.some(v => v < 0) || sequence.some((v,i) => i && v <= sequence[i-1])) {
+            throw Error('GHCR preflight, nonpublishing Docker build and source push must remain ordered');
+          }
+          if (!sync.includes("github.ref == 'refs/heads/master'") ||
+              !sync.includes("github.repository == 'storevani/9router'") ||
+              !sync.includes('name: ghcr-production') ||
+              !sync.includes('secrets.GHCR_PUBLISH_TOKEN')) {
+            throw Error('Publish job missing master-only gate or protected credential');
+          }
+          if (/secrets\.|push:\s*true|packages:\s*write|type=raw,value=latest/.test(secondary)) {
+            throw Error('Secondary Docker workflow must be read-only and build-only');
+          }
+          if (!secondary.includes('outputs: type=cacheonly') || !secondary.includes('push: false')) {
+            throw Error('Secondary Docker image build must not publish outputs');
+          }
+          console.log('PASS: publish isolation, credential gating, and preflight ordering');
+          NODE
 
       - name: Dry-run release merge without pushing
         id: sync
@@ -60,4 +91,17 @@ jobs:
           version="$(node -p 'require("./package.json").version')"
           grep -Fx "version=$version" "$GITHUB_OUTPUT"
           git diff --exit-code "$before" HEAD -- .github Dockerfile
-          echo "Validated release v${version} on local CI checkout only." >> "$GITHUB_STEP_SUMMARY"
+          echo "Local sync and fork protection verified for v${version}." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build merged release without publishing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          outputs: type=cacheonly
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
