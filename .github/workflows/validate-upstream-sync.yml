@@ -7,9 +7,9 @@ on:
     paths:
       - ".github/workflows/sync-upstream.yml"
       - ".github/workflows/validate-upstream-sync.yml"
+      - ".github/workflows/docker-publish.yml"
       - ".github/scripts/sync-upstream-release.sh"
       - ".github/scripts/test-sync-upstream-release.sh"
-      - ".github/workflows/docker-publish.yml"
   workflow_dispatch:
 
 permissions:
@@ -31,41 +31,23 @@ jobs:
       - name: Validate shell syntax
         run: |
           bash -n .github/scripts/sync-upstream-release.sh
+          bash -n .github/scripts/test-sync-upstream-release.sh
           bash -n <(sed -n '/^          inspect_revision() {/,/^          }/p' .github/workflows/sync-upstream.yml | sed 's/^          //')
 
-      - name: Reject divergent, downgraded, and falsified release history
+      - name: Test rejection of unsafe upstream release histories
         run: |
-          bash -n .github/scripts/test-sync-upstream-release.sh
           bash .github/scripts/test-sync-upstream-release.sh
 
-      - name: Ensure secondary GHCR publisher never sets latest
+      - name: Ensure secondary publisher does not overwrite latest
         run: |
           set -euo pipefail
           workflow=".github/workflows/docker-publish.yml"
-          if ! grep -Eq '^[[:space:]]+latest=false[[:space:]]*        id: sync
-        run: |
-          set -euo pipefail
-          before="$(git rev-parse HEAD)"
-          bash .github/scripts/sync-upstream-release.sh
-          version="$(node -p 'require("./package.json").version')"
-          grep -Fx "version=$version" "$GITHUB_OUTPUT"
-          git diff --exit-code "$before" HEAD -- .github Dockerfile
-          echo "Validated release v${version} on local CI checkout only." >> "$GITHUB_STEP_SUMMARY"
- "$workflow"; then
-            echo "::error::docker/metadata-action must have flavor latest=false"
+          if ! grep -Eq '^[[:space:]]+latest=false[[:space:]]*$' "$workflow"; then
+            echo "::error::docker/metadata-action must disable auto latest"
             exit 1
           fi
-          if grep -Eq '^[[:space:]]+type=raw,value=latest[[:space:]]*        id: sync
-        run: |
-          set -euo pipefail
-          before="$(git rev-parse HEAD)"
-          bash .github/scripts/sync-upstream-release.sh
-          version="$(node -p 'require("./package.json").version')"
-          grep -Fx "version=$version" "$GITHUB_OUTPUT"
-          git diff --exit-code "$before" HEAD -- .github Dockerfile
-          echo "Validated release v${version} on local CI checkout only." >> "$GITHUB_STEP_SUMMARY"
- "$workflow"; then
-            echo "::error::Secondary GHCR publisher must not tag latest"
+          if grep -Eq '^[[:space:]]+type=raw,value=latest[[:space:]]*$' "$workflow"; then
+            echo "::error::Secondary publisher must not tag latest"
             exit 1
           fi
 
