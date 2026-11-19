@@ -70,7 +70,7 @@ jobs:
           if (!sync.includes("github.ref == 'refs/heads/master'") ||
               !sync.includes("github.repository == 'storevani/9router'") ||
               !sync.includes('name: ghcr-production') ||
-              !sync.includes('secrets.GHCR_PUBLISH_TOKEN')) {
+              !sync.includes('secrets.GHCR_TOKEN')) {
             throw Error('Publish job missing master-only gate or protected credential');
           }
           if (/secrets\.|push:\s*true|packages:\s*write|type=raw,value=latest/.test(secondary)) {
