@@ -28,81 +28,14 @@ jobs:
           fetch-depth: 0
           ref: master
 
-      - name: Merge upstream master and latest version tag
-        id: merge-upstream
+      - name: Sync and verify latest upstream release
+        id: release
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git remote add upstream https://github.com/decolua/9router.git
-          git fetch upstream master:refs/remotes/upstream/master
-
-          # Upstream may bump package.json only in a release-tag commit, not on master.
-          latest_tag="$(
-            git ls-remote --tags --refs upstream 'refs/tags/v*' |
-              awk '{print $2}' |
-              sed 's#refs/tags/##' |
-              grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' |
-              sort -V |
-              tail -n 1
-          )"
-          if [ -z "$latest_tag" ]; then
-            echo "No stable upstream vX.Y.Z release tag found." >&2
-            exit 1
-          fi
-          git fetch --no-tags upstream "refs/tags/$latest_tag:refs/tags/$latest_tag"
-          echo "version=${latest_tag#v}" >> "$GITHUB_OUTPUT"
-          echo "Upstream release: $latest_tag" >> "$GITHUB_STEP_SUMMARY"
-
-          git fetch origin master
-          git merge --ff-only origin/master
-
-          merge_upstream_ref() {
-            local source_ref="$1"
-            if git merge-base --is-ancestor "$source_ref" HEAD; then
-              echo "Already contains $source_ref."
-              return
-            fi
-
-            if ! git merge --no-ff --no-commit -X theirs "$source_ref"; then
-              conflicts="$(git diff --name-only --diff-filter=U || true)"
-              echo "Merge conflicts with $source_ref:"
-              printf '%s\n' "$conflicts"
-              unexpected="$(
-                printf '%s\n' "$conflicts" |
-                  grep -v -E '^(Dockerfile|\.github/workflows/.*)$' || true
-              )"
-              if [ -n "$unexpected" ]; then
-                echo "Unexpected conflicts require manual resolution:"
-                printf '%s\n' "$unexpected"
-                exit 1
-              fi
-            fi
-
-            # Keep fork-managed automation and the existing fork Dockerfile.
-            git restore --source=HEAD --staged --worktree .github/workflows
-            git restore --source=HEAD --staged --worktree Dockerfile
-            remaining_conflicts="$(git diff --name-only --diff-filter=U || true)"
-            if [ -n "$remaining_conflicts" ]; then
-              echo "Remaining conflicts require manual resolution:"
-              printf '%s\n' "$remaining_conflicts"
-              exit 1
-            fi
-            git commit --no-edit
-          }
-
-          merge_upstream_ref upstream/master
-          merge_upstream_ref "$latest_tag"
-          git log --oneline -1
-          for attempt in 1 2 3; do
-            if git push origin HEAD:master; then
-              exit 0
-            fi
-            git fetch origin master
-            git merge --no-edit origin/master
-          done
-          echo "Could not push after three attempts."
-          exit 1
+          bash .github/scripts/sync-upstream-release.sh
+          # Only publish code based on the current remote master.
+          # Fail closed on a concurrent update rather than merging unreviewed changes.
+          git push origin HEAD:master
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -113,7 +46,6 @@ jobs:
         run: |
           if [ -z "$GHCR_TOKEN" ]; then
             echo "Missing repository secret GHCR_TOKEN."
-            echo "Create a classic PAT with write:packages, read:packages, and repo, then save it as GHCR_TOKEN."
             exit 1
           fi
 
@@ -127,19 +59,36 @@ jobs:
       - name: Check published revision and release image
         id: image
         env:
-          VERSION: ${{ steps.merge-upstream.outputs.version }}
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
           revision="$(git rev-parse HEAD)"
           echo "revision=$revision" >> "$GITHUB_OUTPUT"
-          published="$(docker buildx imagetools inspect "${GHCR_IMAGE}:latest" --format '{{json .Image}}' | jq -r '.config.Labels["org.opencontainers.image.revision"] // empty')"
-          release_published="$(
-            docker buildx imagetools inspect "${GHCR_IMAGE}:${VERSION}" --format '{{json .Image}}' 2>/dev/null |
-              jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' || true
-          )"
+
+          inspect_revision() {
+            local image="$1"
+            local result error_file
+            error_file="$(mktemp)"
+            if result="$(docker buildx imagetools inspect "$image" --format '{{json .Image}}' 2>"$error_file")"; then
+              rm -f "$error_file"
+              jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' <<< "$result"
+            elif grep -Eqi 'manifest unknown|manifest.*not found|not found|404' "$error_file"; then
+              echo "Image $image does not exist yet." >&2
+              rm -f "$error_file"
+              printf '\n'
+            else
+              echo "::error::Failed to inspect $image" >&2
+              cat "$error_file" >&2
+              rm -f "$error_file"
+              return 1
+            fi
+          }
+
+          published="$(inspect_revision "${GHCR_IMAGE}:latest")"
+          release_published="$(inspect_revision "${GHCR_IMAGE}:${VERSION}")"
           if [ "$published" = "$revision" ] && [ "$release_published" = "$revision" ]; then
             echo "needed=false" >> "$GITHUB_OUTPUT"
-            echo "Image latest and ${VERSION} already match $revision; skipping build." >> "$GITHUB_STEP_SUMMARY"
+            echo "Both latest and ${VERSION} already match $revision." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "needed=true" >> "$GITHUB_OUTPUT"
             echo "Publishing latest and ${VERSION} for $revision." >> "$GITHUB_STEP_SUMMARY"
@@ -154,9 +103,10 @@ jobs:
           tags: |
             type=raw,value=sha-${{ steps.image.outputs.revision }}
             type=raw,value=latest
-            type=raw,value=${{ steps.merge-upstream.outputs.version }}
+            type=raw,value=${{ steps.release.outputs.version }}
           labels: |
             org.opencontainers.image.revision=${{ steps.image.outputs.revision }}
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
 
       - name: Build and push image
         if: steps.image.outputs.needed == 'true'
