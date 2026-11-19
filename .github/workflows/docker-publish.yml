@@ -1,4 +1,4 @@
-name: Build and Push GHCR Image
+name: Validate Docker image (no publish)
 
 on:
   push:
@@ -9,68 +9,35 @@ on:
       - "v*"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 env:
-  GHCR_IMAGE: ghcr.io/storevani/9router
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
-concurrency:
-  group: storevani-ghcr
-  cancel-in-progress: false
-
 jobs:
-  build-and-push:
+  build-only:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
 
     steps:
-      - name: Checkout
+      - name: Checkout exact trigger revision
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref_name }}
+          persist-credentials: false
 
-      - uses: docker/setup-buildx-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Verify GHCR token
-        env:
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-        run: |
-          if [ -z "$GHCR_TOKEN" ]; then
-            echo "Missing repository secret GHCR_TOKEN."
-            echo "Create a classic PAT with write:packages, read:packages, and repo, then save it as GHCR_TOKEN."
-            exit 1
-          fi
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ secrets.GHCR_USERNAME || github.repository_owner }}
-          password: ${{ secrets.GHCR_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.GHCR_IMAGE }}
-          # The scheduled release-sync workflow exclusively owns GHCR :latest.
-          # Explicitly disable docker/metadata-action's automatic semver latest tag.
-          flavor: |
-            latest=false
-          tags: |
-            type=semver,pattern={{version}}
-            type=sha,prefix=sha-
-
-      - name: Build and push
+      # Deliberately do not read GHCR secrets or push registry tags here.
+      # Only Sync upstream may publish GHCR, using a protected environment.
+      - name: Validate Docker build (no publishing)
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=registry,ref=${{ env.GHCR_IMAGE }}:buildcache
-          cache-to: type=registry,ref=${{ env.GHCR_IMAGE }}:buildcache,mode=max
           platforms: linux/amd64
+          push: false
+          outputs: type=cacheonly
           provenance: false
           sbom: false
