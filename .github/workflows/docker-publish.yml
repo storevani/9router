@@ -54,10 +54,13 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.GHCR_IMAGE }}
+          # The scheduled release-sync workflow exclusively owns GHCR :latest.
+          # Explicitly disable docker/metadata-action's automatic semver latest tag.
+          flavor: |
+            latest=false
           tags: |
             type=semver,pattern={{version}}
             type=sha,prefix=sha-
-            type=raw,value=latest
 
       - name: Build and push
         uses: docker/build-push-action@v6
