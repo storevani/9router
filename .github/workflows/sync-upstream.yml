@@ -69,7 +69,8 @@ jobs:
           VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
-          export REVISION="$(git rev-parse HEAD)"
+          REVISION="$(git rev-parse HEAD)"
+          export REVISION
           echo "revision=$REVISION" >> "$GITHUB_OUTPUT"
           bash .github/scripts/ghcr-preflight.sh
 
