@@ -32,9 +32,31 @@ if [[ "$tag_package_version" != "$version" ]]; then
   exit 1
 fi
 
-# Never silently blend incompatible upstream histories.
-# A new release must descend from the last synced upstream commit; diverged
-# release histories require manual review instead of an automatic merge.
+# Use the tag for the fork's current version as a historical anchor.
+# A common merge base is insufficient: diverged release histories can share one.
+current_version="$(node -p 'require("./package.json").version')"
+if [[ ! "$current_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "::error::Fork package version '$current_version' is not stable semver; manual review required" >&2
+  exit 1
+fi
+previous_tag="v$current_version"
+if [[ "$(printf '%s\n' "$previous_tag" "$latest_tag" | sort -V | tail -n 1)" != "$latest_tag" ]]; then
+  echo "::error::Refusing to downgrade from $previous_tag to $latest_tag" >&2
+  exit 1
+fi
+git fetch --no-tags "$remote" "refs/tags/$previous_tag:refs/tags/$previous_tag"
+previous_commit="$(git rev-parse "$previous_tag^{commit}")"
+if ! git merge-base --is-ancestor "$previous_commit" HEAD; then
+  echo "::error::Fork HEAD does not contain previous release $previous_tag ($previous_commit)" >&2
+  exit 1
+fi
+if ! git merge-base --is-ancestor "$previous_commit" "$tag_commit"; then
+  echo "::error::New release $latest_tag does not descend from previous release $previous_tag; manual review required" >&2
+  exit 1
+fi
+
+# Only merge releases that extend the previously installed upstream tag.
+# Unexpected application conflicts remain fail-closed.
 if git merge-base --is-ancestor "$tag_commit" HEAD; then
   echo "Already contains $latest_tag"
 else
